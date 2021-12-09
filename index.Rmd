@@ -46,92 +46,234 @@ class_diag <- function(score, truth, positive, cutoff=.5){
 
 # Mining, Classification, Prediction
 
-## Name and EID here
+## Wesley Lu, wl8838
 
 ### Introduction 
 
-Paragraph or two introducing your datasets and variables, why they are interesting to you, etc. See instructions for more information
+Happiness is an essential aspect in life. While the definition of happiness is highly subjective, I selected a dataset of global happiness to investigate factors that may contribute to one's happiness. `Happiness Score` is a numerical variable measuring happiness levels. There are 6 additional numerical variables that act as happiness indicators for each country (observation). `Region` is a categorical variable representing a broader geographical location that a country resides in. There are 10 different groups in this variable with 5 groups having more than 15 countries and the other 5 groups having less than 10 countries. The dataset was originally obtained from Kaggle that lacked a binary variable. Coming from an Asian immigrant family, I created a binary variable, `Asia`, from the `Region` variable entailing whether an observation resides in Asia. In this variable, 22 countries belongs in Asia, and 135 countries do not.
 
 ```{R}
 library(tidyverse)
 # read your datasets in here, e.g., with read_csv()
+data <- read_csv("2016.csv")
 
 # if your dataset needs tidying, do so here
+# create a binary variable
+happy <- data %>% mutate(Asia=ifelse(str_detect(Region, 'Asia'),1,0)) %>% 
+  select(-c(`Happiness Rank`, `Lower Confidence Interval`, `Upper Confidence Interval`))
+happy <- happy %>% column_to_rownames(var='Country')
 
 # any other code here
+happy %>% group_by(Region) %>% summarize(n())
+happy %>% group_by(Asia) %>% summarize(n())
 ```
 
 ### Cluster Analysis
 
 ```{R}
 library(cluster)
+library(GGally)
+
 # clustering code here
+dat <- happy %>% select(c(`Happiness Score`:`Dystopia Residual`)) %>% scale
+
+# average silhouette width
+sil_width<-vector()
+for(i in 2:10){  
+  pam_fit <- pam(dat, k = i)  
+  sil_width[i] <- pam_fit$silinfo$avg.width  
+}
+ggplot()+geom_line(aes(x=1:10,y=sil_width))+scale_x_continuous(name="k",breaks=1:10)
+
+# PAM clustering
+final <- dat %>% pam(2)
+final
+
+happy%>%mutate(cluster=as.factor(final$clustering))%>%
+  ggpairs(columns = 2:9,aes(color=cluster))
+
+# goodness of fit of the cluster solution
+final$silinfo$avg.width
 ```
 
-Discussion of clustering here
-    
+Based on the maximum average silhouette width, the number of clusters was determined to be 2 with Belgium being the representative of cluster 1 (red) and Honduras being the the other (blue). Using ggpairs, the two clusters showed significant difference in distributions of `Happiness Score`, `Economy`, `Family`, `Health`, `Freedom`, and `Trust in Government` and fairly overlapped distributions in `Generosity` and `Dystopia Residual`. Specifically, cluster 1 is happier, wealthier, more family support, healthier, experiencing more freedom and less government control. Cluster 2 is less happier, poorer, less family support, less healthier, experiencing less freedom and more government control. Goodness of fit of the cluster solution was determined to be 0.26, indicating that the structure is weak and could be from noise.
     
 ### Dimensionality Reduction with PCA
 
 ```{R}
 # PCA code here
+happy_pca<-princomp(dat, cor=T)
+summary(happy_pca, loadings=T) #get PCA summary
+
+eigval <- happy_pca$sdev^2 #square to convert SDs to eigenvalues
+varprop=round(eigval/sum(eigval), 2) #proportion of var explained by each PC
+
+ggplot() + geom_bar(aes(y=varprop, x=1:8), stat="identity") + xlab("") + geom_path(aes(y=varprop, x=1:8)) + 
+  geom_text(aes(x=1:8, y=varprop, label=round(varprop, 2)), vjust=1, col="white", size=5) + 
+  scale_y_continuous(breaks=seq(0, .6, .2), labels = scales::percent) + 
+  scale_x_continuous(breaks=1:10)
+
+eigval
+
+# plot of PC1 and PC2
+happy%>%mutate(PC1=happy_pca$scores[,1], PC2=happy_pca$scores[,2])%>%
+ggplot(aes(PC1,PC2, color=Region))+geom_point() 
+
+# plot of PC3 and PC4
+happy%>%mutate(PC3=happy_pca$scores[,3], PC4=happy_pca$scores[,4])%>%
+ggplot(aes(PC3,PC4, color=Region))+geom_point() 
+
 ```
 
-Discussions of PCA here. 
+PCA was performed on all numeric variables as shown above. 4 PCs were retained as over 80% of the total variance (87.24%) could be explained by these PCs. A high PC1 means happier, wealthier, more family support, and more freedom. A high PC2 represents lower trust in government and lower generosity. A high PC3 means high dystpia residual. A high PC4 represents lower trust in government and high generosity.
 
 ###  Linear Classifier
 
 ```{R}
 # linear classifier code here
+# logistic regression
+class_dat <- happy %>% select(-Region)
+fit<-glm(Asia~., data=class_dat, family="binomial")
+score <- predict(fit, type="response")
+
+# confusion table
+table(truth= factor(class_dat$Asia==1, levels=c("TRUE","FALSE")),
+      prediction= factor(score>.5, levels=c("TRUE","FALSE")))
+
+class_diag(score,class_dat$Asia,positive=1)
 ```
 
 ```{R}
 # cross-validation of linear classifier here
+set.seed(1234)
+k=10 #choose number of folds
+
+data<-class_dat[sample(nrow(class_dat)),] #randomly order rows
+folds<-cut(seq(1:nrow(class_dat)),breaks=k,labels=F) #create 10 folds
+diags<-NULL
+
+for(i in 1:k){
+  ## Create training and test sets
+  train<-data[folds!=i,] 
+  test<-data[folds==i,]
+  truth<-test$Asia
+  
+  ## Train model on training set
+  fit<-glm(Asia~.,data=train,family="binomial")
+  probs<-predict(fit,newdata = test,type="response")
+  
+  ## Test model on test set (save all k results)
+  diags<-rbind(diags,class_diag(probs,truth, positive=1))
+}
+
+summarize_all(diags,mean) #average diagnostics across all k folds
 ```
 
-Discussion here
+Logistic regression was performed on the binary variable `Asia` using all the numerical variables. The model has an AUC of 0.8687, suggesting that the model has good performance in-sample. A k-Fold CV was also performed, in which the AUC was determined to be 0.82. The result suggested that the performance was worse out-of-sample, and there were signs of overfitting.
 
 ### Non-Parametric Classifier
 
 ```{R}
 library(caret)
+
 # non-parametric classifier code here
+# make valid column names 
+colnames(class_dat) <- make.names(colnames(class_dat))
+
+# k-nearest-neighbors
+knn_fit <- knn3(factor(Asia==1,levels=c("TRUE","FALSE")) ~ ., data=class_dat, k=5)
+y_hat_knn <- predict(knn_fit,class_dat)
+
+# confusion table
+table(truth= factor(class_dat$Asia==1, levels=c("TRUE","FALSE")),
+      prediction= factor(y_hat_knn[,1]>.5, levels=c("TRUE","FALSE")))
+
+class_diag(y_hat_knn[,1],class_dat$Asia, positive=1)
 ```
 
 ```{R}
 # cross-validation of np classifier here
+set.seed(1234)
+k=10
+
+data<-class_dat[sample(nrow(class_dat)),] #randomly order rows
+folds<-cut(seq(1:nrow(class_dat)),breaks=k,labels=F) #create 10 folds
+diags<-NULL
+
+for(i in 1:k){
+  ## Create training and test sets
+  train<-data[folds!=i,] 
+  test<-data[folds==i,]
+  truth<-test$Asia
+  
+  ## Train model on training set
+  fit<-knn3(Asia~.,data=class_dat)
+  probs<-predict(fit,newdata = test)[,2]
+  
+  ## Test model on test set (save all k results)
+  diags<-rbind(diags,class_diag(probs,truth, positive=1))
+}
+
+summarize_all(diags,mean)
 ```
 
-Discussion
+k-nearest-neighbor classification was performed on the binary variable `Asia` using all the numerical variables. The model has an AUC of 0.9081, suggesting that the model has great performance in-sample. A k-Fold CV was also performed, in which the AUC was determined to be 0.9223. The result suggested that the performance was slightly better out-of-sample, and as such, there were no signs of overfitting.
 
 
 ### Regression/Numeric Prediction
 
 ```{R}
 # regression model code here
+fit<-lm(`Happiness Score`~ Family+Freedom,data=happy)
+yhat<-predict(fit) #predicted happiness score
+
+mean((happy$`Happiness Score`-yhat)^2) #mean squared error (MSE)
 ```
 
 ```{R}
 # cross-validation of regression model here
+set.seed(1234)
+k=5 #choose number of folds
+
+data<-happy[sample(nrow(happy)),] #randomly order rows
+folds<-cut(seq(1:nrow(happy)),breaks=k,labels=F) #create folds
+diags<-NULL
+
+for(i in 1:k){
+  train<-data[folds!=i,]
+  test<-data[folds==i,]
+  ## Fit linear regression model to training set
+  fit<-lm(`Happiness Score`~Family+Freedom,data=train)
+  ## Get predictions/y-hats on test set (fold i)
+  yhat<-predict(fit,newdata=test)
+  ## Compute prediction error  (MSE) for fold i
+  diags<-mean((test$`Happiness Score`-yhat)^2) 
+}
+mean(diags) ## get average MSE across all folds (much higher error)!
 ```
 
-Discussion
+Linear regression was performed on the variable `Happiness Score` using variables `Family` and `Freedom`. The model has an MSE of 0.498 in-sample. A k-fold CV was also performed, in which the MSE was determined to be 0.626, suggesting there were signs of overfitting.
 
 ### Python 
 
 ```{R}
 library(reticulate)
+
+use_python("/usr/bin/python3", required = F)
+happiness <- happy$`Happiness Score`
 ```
 
 ```{python}
 # python code here
+tot = sum(r.happiness)
 ```
 
-Discussion
+```{R}
+avg = py$tot/length(happiness)
+avg
+```
 
-### Concluding Remarks
-
-Include concluding remarks here, if any
+Column `Happiness Score` was extracted in a R code chunk. Then, the sum of this column was calculated in a python code chunk. Lastly, the average value was calculated in another R code chunk by dividing the sum by the number of items in that column.
 
 
 
